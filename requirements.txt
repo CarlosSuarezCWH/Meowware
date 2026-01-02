@@ -1,0 +1,38 @@
+# Meowware v16.0 - Python Dependencies
+# Developed by Carlos Mancera
+# Python 3.8+ required
+
+# HTTP Requests
+requests>=2.31.0
+urllib3>=2.0.0  # Required for HTTP pool retry strategy
+
+# Optional: Environment variables management
+python-dotenv>=1.0.0
+
+# Optional: Data validation (recomendado para mejoras futuras)
+# pydantic>=2.0.0
+
+# Optional: Rate limiting (recomendado para mejoras futuras)
+# ratelimit>=2.2.1
+
+# Optional: Enhanced logging (recomendado para mejoras futuras)
+# structlog>=23.0.0
+
+# Note: Las siguientes herramientas deben instalarse manualmente o via install_tools.sh:
+# - nmap (apt install nmap)
+# - whatweb (apt install whatweb)
+# - whois (apt install whois)
+# - dig (apt install dnsutils)
+# - nikto (apt install nikto)
+# - wpscan (gem install wpscan)
+# - joomscan (ver install_tools.sh)
+# - droopescan (pip3 install droopescan)
+# - nuclei (go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest)
+# - subjack (go install github.com/haccer/subjack@latest)
+# - testssl.sh (git clone https://github.com/drwetter/testssl.sh /opt/testssl.sh)
+# - git-dumper (pip3 install git-dumper)
+# - feroxbuster (apt install feroxbuster o desde GitHub)
+# - dirsearch (git clone https://github.com/maurosoria/dirsearch.git)
+# - amass (go install github.com/owasp-amass/amass/v4/...@master)
+# - subfinder (go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest)
+
