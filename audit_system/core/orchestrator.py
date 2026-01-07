@@ -9,7 +9,9 @@ import concurrent.futures
 from .target import Target
 from .models import ScanResult, ScanTarget, Host, DNSInfo, WebContext, Finding, Severity, Service, AIReasoning, EvidenceType
 from .ai_client import CognitiveEngine
-from .debug import debug_print, debug_section, debug_tool
+from .logger import logger, debug_print, debug_section, debug_tool, log_tool_execution
+from .config import get_config
+from .validators import validate_and_sanitize_target, ValidationError
 
 from ..tools.nmap_runner import NmapTool
 from ..tools.whois_runner import WhoisTool
@@ -161,12 +163,24 @@ class Orchestrator:
         from ..reporting.executive_report import ExecutiveReporter
         from ..reporting.dashboard import DashboardReporter
         
+        # v19.0: Offensive Recon (Cloud & JS)
+        from ..intelligence.cloud_recon import CloudRecon
+        from ..intelligence.js_analyzer import JSAnalyzer
+        
+        # v19.1: Stealth & Post-Exploitation
+        from ..evasion.stealth_manager import StealthManager, StealthLevel
+        from ..exploitation.post_exploit import PostExploitationEngine
+
         self.exploit_engine = ExploitEngine(self.cve_lookup)
         self.mitre_builder = MITREAttackChainBuilder()
         self.waf_bypass = WAFBypass()
         self.intelligent_fuzzer = IntelligentFuzzer()
         self.executive_reporter = ExecutiveReporter()
         self.dashboard_reporter = DashboardReporter()
+        self.cloud_recon = CloudRecon()
+        self.js_analyzer = JSAnalyzer()
+        self.stealth_manager = StealthManager()
+        self.post_exploit_engine = PostExploitationEngine()
         
         # v12: TECH TRIGGERS (Enriched)
         self.TECH_TRIGGERS = [
@@ -318,6 +332,11 @@ class Orchestrator:
         if "Main" in roles and self._is_waf(ip):
             # Passive path: still fingerprint CMS and headers even when fronted by WAF
             debug_print(f"  ⚠️  WAF Identified. Running passive header probe.")
+            
+            # v19.1: Auto-Configure Stealth Manager
+            self.stealth_manager.set_level(StealthLevel.LEVEL_2) # Default for WAF
+            debug_print(f"    [Stealth] Stealth Level increased to 2 (Random Delays + Rotation)")
+
             url = f"https://{primary_name}"
             ww = self.whatweb.run(url)
             # v16.1: Ensure tech_versions is a dict, not a string
@@ -403,6 +422,15 @@ class Orchestrator:
                 if container_findings:
                     global_findings.extend(container_findings)
                     debug_print(f"    [Container Audit] Found {len(container_findings)} container-related issues")
+
+                # v19.0: Cloud Reconnaissance (Evidence Driven)
+                # Logic: Run if hostname is available (for permutations)
+                if host_model.hostname and host_model.hostname != ip:
+                    debug_print(f"    [Cloud Recon] Checking for exposed cloud buckets (S3/Azure) for {host_model.hostname}...")
+                    cloud_findings = self.cloud_recon.check_cloud_exposure(host_model)
+                    if cloud_findings:
+                         debug_print(f"    [!] Cloud Exposures Found: {len(cloud_findings)}")
+                         global_findings.extend(cloud_findings)
 
                 # 1. EARLY FINGERPRINTING & PROXY DETECTION (v15.0 WhatWeb-First)
                 web_ports = [s for s in host_model.services if s.port in [80, 443, 8080, 8443]]
@@ -514,6 +542,10 @@ class Orchestrator:
                         title = f"{detected_cms} CMS Identified ({ip})"
                         if cms_confidence < 0.6:
                             title += " (Low Confidence - Verification Pending)"
+                        
+                        # v19.0: If WordPress detected, automatically suggest WPScan in next iteration
+                        if "wordpress" in detected_cms.lower():
+                            debug_print(f"    [Auto-Recommend] WordPress detected - WPScan will be suggested in next iteration")
                             
                         global_findings.append(Finding(
                             title=title,
@@ -525,8 +557,42 @@ class Orchestrator:
                             evidence_type=EvidenceType.RECON
                         ))
                     
+
                     if host_model.is_proxy:
                         debug_print(f"    [🛡️] Proxy/WAF Node detected ({host_model.web_context.waf_name}). Pivoting to Software-First audit.")
+
+                    # v19.0: Deep JS Analysis (Autonomous Trigger)
+                    if iteration == 1 and host_model.web_context:
+                        debug_print(f"    [JS Analysis] fetching main page to extract usage...")
+                        try:
+                            # Use logic to fetch page
+                            # In a real scenario we might already have the body from WhatWeb but we can fetch again
+                            resp = requests.get(url, timeout=5, verify=False, headers={'User-Agent': 'Mozilla/5.0'})
+                            if resp.status_code == 200:
+                                # Analyze inline scripts
+                                js_findings = self.js_analyzer.analyze_js(resp.text, url)
+                                if js_findings:
+                                    debug_print(f"      [JS] Found {len(js_findings)} issues in inline scripts/HTML")
+                                    global_findings.extend(js_findings)
+                                
+                                # Extract external scripts
+                                script_srcs = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', resp.text, re.IGNORECASE)
+                                for src in script_srcs[:5]: # Limit to first 5 to avoid hanging
+                                    if not src.startswith("http"):
+                                        # Handle relative URLs
+                                        if src.startswith("//"): src = "https:" + src
+                                        else: src = url.rstrip("/") + "/" + src.lstrip("/")
+                                    
+                                    try:
+                                        js_resp = requests.get(src, timeout=3, verify=False)
+                                        if js_resp.status_code == 200:
+                                            ext_findings = self.js_analyzer.analyze_js(js_resp.text, src)
+                                            if ext_findings:
+                                                debug_print(f"      [JS] Found {len(ext_findings)} issues in {src.split('/')[-1]}")
+                                                global_findings.extend(ext_findings)
+                                    except: pass
+                        except Exception as e:
+                            debug_print(f"    [!] JS Analysis failed: {e}")
 
                     # INTELLIGENT DECISION ENGINE: Decide which tools to run
                     debug_print(f"    [AI Engine] Analyzing context and deciding tools...")
@@ -541,6 +607,16 @@ class Orchestrator:
                     decision_result = self.decision_engine.decide_tools(host_model, dns_info=None)
                     tools_to_run = decision_result["tools_to_run"]
                     reasoning = decision_result["reasoning"]
+                    
+                    # v19.0: Force WPScan if WordPress detected and not already in tools_to_run
+                    if detected_cms and "wordpress" in detected_cms.lower() and "wpscan" not in tools_to_run and "wpscan" not in scan_state[ip]["tools"]:
+                        debug_print(f"    [Auto-Add] WordPress detected - automatically adding WPScan to execution queue")
+                        tools_to_run["wpscan"] = {
+                            "tool": "wpscan",
+                            "priority": "high",
+                            "reason": "WordPress CMS confirmed - enumerating plugins, themes, and users for vulnerabilities",
+                            "aggressive": True
+                        }
                     
                     # v16.0: Apply pattern learning recommendations (boost recommended tools)
                     for tool_name, confidence in recommendations[:5]:
@@ -562,16 +638,20 @@ class Orchestrator:
                         
                         # CMS Scans
                         if tool_name == "wpscan":
-                            # v17.6: Use frozen confidence - don't recalculate
-                            wp_confirmed = host_model.web_context and host_model.web_context.cms_detected and "wordpress" in host_model.web_context.cms_detected.lower()
+                            # v19.0: Always execute WPScan if WordPress is detected, regardless of confidence
+                            wp_confirmed = host_model.web_context and host_model.web_context.cms_detected and host_model.web_context.cms_detected and "wordpress" in str(host_model.web_context.cms_detected).lower()
                             # v17.6: Get frozen confidence from web_context (set during detection phase)
                             cms_confidence = getattr(host_model.web_context, 'cms_confidence', 0.7) if host_model.web_context else 0.7
                             
-                            if wp_confirmed and cms_confidence < 0.6:
-                                debug_print(f"    [Block] wpscan skipped: WordPress detection confidence too low ({cms_confidence:.0%}) [Using frozen confidence from detection phase]")
+                            if not wp_confirmed:
+                                debug_print(f"    [Block] wpscan skipped: WordPress not detected")
                                 scan_state[ip]["tools"].append("wpscan")
                                 continue
-                            elif wp_confirmed:
+                            
+                            # v19.0: Execute WPScan even with low confidence, but log it
+                            if cms_confidence < 0.6:
+                                debug_print(f"    [⚠] WordPress detected with low confidence ({cms_confidence:.0%}) - executing WPScan anyway")
+                            else:
                                 debug_print(f"    [✓] WordPress confirmed with confidence {cms_confidence:.0%} [FROZEN] - proceeding with WPScan")
                                 
                             has_waf = host_model.web_context and host_model.web_context.waf_detected
@@ -580,9 +660,9 @@ class Orchestrator:
                             
                             if wp_confirmed:
                                 if has_waf:
-                                    debug_print(f"    [WPScan] WordPress confirmed with WAF - attempting enumeration (plugins/users)")
+                                    debug_print(f"    [WPScan] WordPress detected with WAF - attempting enumeration (plugins/users)")
                                 else:
-                                    debug_print(f"    [WPScan] WordPress confirmed - full enumeration")
+                                    debug_print(f"    [WPScan] WordPress detected - full enumeration")
                             
                             # v16.2: If WordPress detected on subdomain, also try main domain
                             wp_url = url
@@ -1090,7 +1170,8 @@ class Orchestrator:
             deep_dive_recommendations = []
             exploitable_findings = []
             
-            for finding in recent_findings:
+            # v19.0: Use unique_recent_findings (Finding objects) not recent_findings (dicts for LLM)
+            for finding in unique_recent_findings:
                 if finding.severity in [Severity.CRITICAL, Severity.HIGH]:
                     investigation = self.deep_dive.investigate_finding(finding, host_model)
                     
@@ -1687,6 +1768,13 @@ class Orchestrator:
 
             iteration += 1
 
+        # v19.1: Automated Post-Exploitation Suggestions
+        current_findings = [f for f in global_findings if f.title.endswith(f"({ip})")]
+        post_exploit_actions = self.post_exploit_engine.suggest_post_exploit_actions(host_model, current_findings)
+        if post_exploit_actions:
+            debug_print(f"    [Post-Exploit] Generated {len(post_exploit_actions)} automated next steps")
+            global_findings.extend(post_exploit_actions)
+
         global_findings.extend(DecisionEngine.analyze(host_model, None))
         return host_model
 
@@ -1850,7 +1938,12 @@ class Orchestrator:
         if len(consolidated_hosts) == 0:
             debug_print("  [Cloudflare Filter] All hosts are Cloudflare edge nodes - no origin servers to audit")
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        # v19.0: Usar configuración dinámica de workers
+        config = get_config()
+        max_workers = config.performance.max_workers
+        logger.info(f"Iniciando auditoría paralela con {max_workers} workers")
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Pass fingerprint_registry to _audit_host (needs method signature update)
             future_to_host = {executor.submit(self._audit_host, host, scan_state, all_findings, all_reasoning, fingerprint_registry): host for host in consolidated_hosts[:5]}
             for future in concurrent.futures.as_completed(future_to_host):

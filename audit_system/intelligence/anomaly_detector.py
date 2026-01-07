@@ -86,28 +86,49 @@ class AnomalyDetector:
         anomalies = []
         
         # 1. Anomalía: Combinación sospechosa de puertos
+        # v19.0: Reduced severity - DB+Web on same host is common in control panels (cPanel, Plesk, etc.)
         open_ports = {s.port for s in services if s.state == 'open'}
+        
+        # Check if this looks like a control panel (common ports for cPanel, Plesk, etc.)
+        control_panel_ports = {2082, 2083, 2086, 2087, 2095, 2096, 8443, 8444}  # cPanel/Plesk ports
+        is_likely_control_panel = bool(control_panel_ports.intersection(open_ports))
+        
+        # Also check hostname for control panel indicators
+        hostname_lower = (host.hostname or "").lower() if hasattr(host, 'hostname') else ""
+        is_control_panel_hostname = any(indicator in hostname_lower for indicator in ['panel', 'cpanel', 'plesk', 'admin', 'control'])
+        
         for suspicious_combo in self.suspicious_port_combinations:
             if suspicious_combo.issubset(open_ports):
                 db_port = next((p for p in suspicious_combo if p in [3306, 5432, 27017, 6379]), None)
                 web_ports = {p for p in suspicious_combo if p in [80, 443, 8080, 8443]}
                 
                 if db_port and web_ports:
+                    # v19.0: Reduce severity if it's likely a control panel - this is normal
+                    if is_likely_control_panel or is_control_panel_hostname:
+                        severity = Severity.INFO
+                        description = f"Database port {db_port} exposed alongside web services. This is common in control panels (cPanel, Plesk) or custom applications. Verify that database access is properly restricted."
+                        confidence = 0.5
+                    else:
+                        # Still note it, but as MEDIUM instead of HIGH
+                        severity = Severity.MEDIUM
+                        description = f"Database port {db_port} exposed alongside web services. This suggests poor network segmentation. Verify that database access is properly restricted and not publicly accessible."
+                        confidence = 0.7
+                    
                     anomalies.append(Anomaly(
                         type=AnomalyType.UNUSUAL_PORT_COMBINATION,
-                        severity=Severity.HIGH,
-                        description=f"Database port {db_port} exposed alongside web services. This suggests poor network segmentation and potential for SQL injection attacks.",
+                        severity=severity,
+                        description=description,
                         evidence={
                             'database_port': db_port,
                             'web_ports': list(web_ports),
-                            'all_ports': list(open_ports)
+                            'all_ports': list(open_ports),
+                            'likely_control_panel': is_likely_control_panel or is_control_panel_hostname
                         },
-                        confidence=0.85,
-                        hypothesis="Database and web services on same host indicate poor segmentation. Possible SQL injection vector or direct database access.",
+                        confidence=confidence,
+                        hypothesis="Database and web services on same host. Verify proper access controls and network segmentation.",
                         recommended_actions=[
                             "mysql-client" if db_port == 3306 else "postgres-client",
-                            "sqlmap",
-                            "nuclei:tags=sql-injection,exposure"
+                            "nuclei:tags=exposure"
                         ]
                     ))
         
@@ -259,12 +280,28 @@ class HypothesisEngine:
         self.confirmed_hypotheses: List[Hypothesis] = []
         self.rejected_hypotheses: List[Hypothesis] = []
     
-    def generate_hypothesis_from_anomaly(self, anomaly: Anomaly, iteration: int) -> Hypothesis:
+    def generate_hypothesis_from_anomaly(self, anomaly: Anomaly, iteration: int) -> Optional[Hypothesis]:
         """
         Genera una hipótesis a partir de una anomalía detectada.
         Razonamiento: "Esta anomalía sugiere que..."
         """
-        hypothesis_id = f"hyp_{anomaly.type.value}_{iteration}"
+        # v19.0: Stable ID (ignore iteration) to prevent duplicate hypotheses
+        # Use anomaly type and a hash of description/evidence as stable ID
+        import hashlib
+        evidence_str = str(sorted(anomaly.evidence.items())) if anomaly.evidence else ""
+        content_hash = hashlib.md5((anomaly.type.value + anomaly.description + evidence_str).encode()).hexdigest()[:8]
+        hypothesis_id = f"hyp_{anomaly.type.value}_{content_hash}"
+        
+        # Check if already active or confirmed
+        if hypothesis_id in self.active_hypotheses:
+            # Just update last_seen but don't create new one
+            self.active_hypotheses[hypothesis_id].last_evidence_iter = iteration
+            return self.active_hypotheses[hypothesis_id]
+        
+        # Check if already rejected/confirmed (optional, but good practice)
+        for h in self.confirmed_hypotheses + self.rejected_hypotheses:
+            if h.id == hypothesis_id:
+                return h
         
         hypothesis = Hypothesis(
             id=hypothesis_id,

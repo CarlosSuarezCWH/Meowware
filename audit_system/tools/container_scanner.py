@@ -1,7 +1,7 @@
 import requests
 from typing import List, Dict, Any
 from ..core.debug import debug_print
-from ..analysis.risk_scorer import Finding, Severity
+from ..core.models import Finding, Severity, EvidenceType
 
 class ContainerScanner:
     """
@@ -33,11 +33,13 @@ class ContainerScanner:
                     res = requests.get(url, timeout=5, verify=False)
                     if res.status_code == 200:
                         findings.append(Finding(
-                            title="Unauthenticated Docker Socket Exposed",
+                            title=f"Unauthenticated Docker Socket Exposed ({ip})",
+                            category="Container",
                             description=f"Docker Remote API is exposed without authentication at {url}. This allows full control over the host containers.",
                             severity=Severity.CRITICAL,
-                            mitigation="Restrict access to the Docker socket or enable TLS authentication.",
-                            references=["https://docs.docker.com/engine/security/https/"]
+                            recommendation="Restrict access to the Docker socket or enable TLS authentication.",
+                            evidence_type=EvidenceType.VULNERABILITY,
+                            raw_output=f"Docker API accessible at {url}"
                         ))
                 except:
                     pass
@@ -53,11 +55,13 @@ class ContainerScanner:
                     res = requests.get(url, timeout=5, verify=False)
                     if res.status_code == 200:
                         findings.append(Finding(
-                            title="Kubernetes API Anonymous Access Enabled",
+                            title=f"Kubernetes API Anonymous Access Enabled ({ip})",
+                            category="Container",
                             description=f"The Kubernetes API at {url} allows anonymous access. This could lead to information disclosure or cluster compromise.",
                             severity=Severity.HIGH,
-                            mitigation="Disable anonymous-auth in the kube-apiserver configuration.",
-                            references=["https://kubernetes.io/docs/reference/access-authn-authz/authorization/"]
+                            recommendation="Disable anonymous-auth in the kube-apiserver configuration.",
+                            evidence_type=EvidenceType.VULNERABILITY,
+                            raw_output=f"Kubernetes API accessible at {url}"
                         ))
                 except:
                     pass

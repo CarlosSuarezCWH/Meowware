@@ -453,21 +453,35 @@ class WPScanTool(BaseTool):
                         "recommendation": f"Update WordPress to a patched version."
                     })
             
-            # User Enumeration - v16.3: Enhanced reporting
+            # User Enumeration - v19.0: Enhanced detailed reporting
             users = data.get('users', {})
             if users:
                 user_list = list(users.keys())
                 users_with_ids = [u for u, data in users.items() if data.get('id')]
                 users_without_ids = [u for u, data in users.items() if not data.get('id')]
                 
+                # Build detailed user information
+                user_details = []
+                for username, user_data in users.items():
+                    user_id = user_data.get('id', 'N/A')
+                    user_url = user_data.get('url', 'N/A')
+                    user_details.append(f"{username} (ID: {user_id})")
+                
+                # Main finding with all users
                 findings.append({
                     "type": "wp_users", 
                     "issue": f"WordPress User Enumeration ({len(users)} users)",
                     "message": f"Found {len(users)} users exposed via enumeration.",
                     "severity": Severity.MEDIUM,
-                    "description": f"User enumeration reveals {len(users)} usernames. {len(users_with_ids)} users have IDs exposed. Sample users: {', '.join(user_list[:10])}",
+                    "description": f"User enumeration reveals {len(users)} usernames. {len(users_with_ids)} users have IDs exposed.\n\n**Usuarios Encontrados:**\n" + "\n".join([f"- {ud}" for ud in user_details[:20]]),
                     "recommendation": "Disable user enumeration via REST API (wp-json/wp/v2/users) and author archives. Consider using security plugins to restrict user enumeration.",
-                    "raw_output": f"Total users: {len(users)}, With IDs: {len(users_with_ids)}, Without IDs: {len(users_without_ids)}"
+                    "raw_output": json.dumps({
+                        "total_users": len(users),
+                        "users_with_ids": len(users_with_ids),
+                        "users_without_ids": len(users_without_ids),
+                        "user_list": user_list,
+                        "user_details": {u: {"id": d.get('id'), "url": d.get('url')} for u, d in users.items()}
+                    }, indent=2)
                 })
                 
                 # Report if admin users are exposed
@@ -478,93 +492,173 @@ class WPScanTool(BaseTool):
                         "issue": "Admin-like Usernames Exposed",
                         "message": f"Admin-like usernames found: {', '.join(admin_users)}",
                         "severity": Severity.HIGH,
-                        "description": f"Usernames that appear to be administrative accounts are exposed: {', '.join(admin_users)}. This increases the risk of targeted brute force attacks.",
-                        "recommendation": "Change admin usernames to non-obvious names. Use strong passwords and enable 2FA."
+                        "description": f"Usernames that appear to be administrative accounts are exposed: {', '.join(admin_users)}. This increases the risk of targeted brute force attacks.\n\n**Usuarios Administrativos Expuestos:**\n" + "\n".join([f"- {u} (ID: {users[u].get('id', 'N/A')})" for u in admin_users]),
+                        "recommendation": "Change admin usernames to non-obvious names. Use strong passwords and enable 2FA.",
+                        "raw_output": json.dumps({"admin_users": admin_users}, indent=2)
                     })
             
-            # Plugin Detection and Vulnerabilities - v16.3: Report all plugins, not just vulnerable ones
+            # Plugin Detection and Vulnerabilities - v19.0: Enhanced detailed reporting
             plugins = data.get('plugins', {})
             if plugins:
                 plugin_names = list(plugins.keys())
+                
+                # Build detailed plugin information
+                plugin_details = []
+                vulnerable_plugins = []
+                outdated_plugins_list = []
+                
+                for plugin_name, plugin_data in plugins.items():
+                    version = plugin_data.get('version', {}).get('number', 'Unknown')
+                    location = plugin_data.get('location', 'Unknown')
+                    status = plugin_data.get('status', 'Unknown')
+                    outdated = plugin_data.get('outdated', False)
+                    plugin_vulns = plugin_data.get('vulnerabilities', [])
+                    
+                    plugin_info = f"- **{plugin_name}** (v{version}) - {status}"
+                    if location != 'Unknown':
+                        plugin_info += f" - {location}"
+                    plugin_details.append(plugin_info)
+                    
+                    if outdated:
+                        latest_version = plugin_data.get('latest_version', 'Unknown')
+                        outdated_plugins_list.append({
+                            "name": plugin_name,
+                            "current": version,
+                            "latest": latest_version
+                        })
+                    
+                    if plugin_vulns:
+                        vulnerable_plugins.append({
+                            "name": plugin_name,
+                            "version": version,
+                            "vulnerabilities": plugin_vulns
+                        })
+                
+                # Main finding with all plugins
                 findings.append({
                     "type": "wp_plugins",
                     "issue": f"WordPress Plugins Detected ({len(plugins)})",
-                    "message": f"Found {len(plugins)} plugins: {', '.join(plugin_names)}",
+                    "message": f"Found {len(plugins)} plugins installed.",
                     "severity": Severity.INFO,
-                    "description": f"WordPress plugins detected: {', '.join(plugin_names)}. Review each plugin for security updates and vulnerabilities.",
-                    "recommendation": "Keep all plugins updated to latest versions. Remove unused plugins.",
-                    "raw_output": f"Plugins: {', '.join(plugin_names)}"
+                    "description": f"WordPress plugins detected: {len(plugins)} plugins found.\n\n**Plugins Encontrados:**\n" + "\n".join(plugin_details[:30]),
+                    "recommendation": "Keep all plugins updated to latest versions. Remove unused plugins. Review each plugin for security updates.",
+                    "raw_output": json.dumps({
+                        "total_plugins": len(plugins),
+                        "plugin_list": plugin_names,
+                        "plugin_details": {p: {"version": d.get('version', {}).get('number'), "location": d.get('location'), "status": d.get('status')} for p, d in plugins.items()}
+                    }, indent=2)
                 })
                 
-                # Report outdated plugins
-                outdated_plugins = []
-                for plugin_name, plugin_data in plugins.items():
-                    if plugin_data.get('outdated', False):
-                        outdated_plugins.append(plugin_name)
-                        findings.append({
-                            "type": "vulnerability",
-                            "issue": f"Outdated Plugin: {plugin_name}",
-                            "message": f"Plugin {plugin_name} is outdated",
-                            "severity": Severity.MEDIUM,
-                            "description": f"Plugin {plugin_name} is outdated. Latest version: {plugin_data.get('latest_version', 'Unknown')}",
-                            "recommendation": f"Update {plugin_name} to latest version immediately."
-                        })
+                # Report outdated plugins with details
+                for outdated_info in outdated_plugins_list:
+                    findings.append({
+                        "type": "vulnerability",
+                        "issue": f"Plugin Desactualizado: {outdated_info['name']}",
+                        "message": f"Plugin {outdated_info['name']} está desactualizado (v{outdated_info['current']} → v{outdated_info['latest']})",
+                        "severity": Severity.MEDIUM,
+                        "description": f"**Plugin:** {outdated_info['name']}\n**Versión Actual:** {outdated_info['current']}\n**Última Versión:** {outdated_info['latest']}\n\nEste plugin está desactualizado y puede contener vulnerabilidades conocidas.",
+                        "recommendation": f"Actualizar {outdated_info['name']} a la versión {outdated_info['latest']} inmediatamente.",
+                        "raw_output": json.dumps(outdated_info, indent=2)
+                    })
                 
-                # Report plugin vulnerabilities
-                for plugin_name, plugin_data in plugins.items():
-                    plugin_vulns = plugin_data.get('vulnerabilities', [])
-                    for vuln in plugin_vulns:
+                # Report plugin vulnerabilities with full details
+                for vuln_plugin in vulnerable_plugins:
+                    for vuln in vuln_plugin['vulnerabilities']:
+                        cves = vuln.get('references', {}).get('cve', [])
+                        cve_list = ', '.join(cves) if cves else 'N/A'
                         findings.append({
                             "type": "vulnerability",
-                            "issue": f"Vulnerable Plugin: {plugin_name}",
-                            "message": vuln.get('title', 'Plugin vulnerability'),
+                            "issue": f"Plugin Vulnerable: {vuln_plugin['name']}",
+                            "message": f"{vuln_plugin['name']} v{vuln_plugin['version']} - {vuln.get('title', 'Vulnerabilidad detectada')}",
                             "severity": Severity.HIGH,
-                            "description": f"Plugin {plugin_name} has known vulnerabilities: {vuln.get('title', 'Unknown')}. CVE: {', '.join(vuln.get('references', {}).get('cve', []))}",
-                            "recommendation": f"Update or remove {plugin_name} plugin immediately.",
-                            "raw_output": str(vuln)
+                            "description": f"**Plugin:** {vuln_plugin['name']}\n**Versión:** {vuln_plugin['version']}\n**Vulnerabilidad:** {vuln.get('title', 'Unknown')}\n**CVEs:** {cve_list}\n**Descripción:** {vuln.get('description', 'N/A')}\n**Referencias:** {', '.join(vuln.get('references', {}).get('url', []))}",
+                            "recommendation": f"Actualizar o eliminar {vuln_plugin['name']} inmediatamente. Revisar CVEs: {cve_list}",
+                            "raw_output": json.dumps({
+                                "plugin": vuln_plugin['name'],
+                                "version": vuln_plugin['version'],
+                                "vulnerability": vuln
+                            }, indent=2)
                         })
             
-            # Theme Detection and Vulnerabilities - v16.3: Report all themes
+            # Theme Detection and Vulnerabilities - v19.0: Enhanced detailed reporting
             themes = data.get('themes', {})
             main_theme = data.get('main_theme', {})
             
             if main_theme:
                 theme_name = main_theme.get('slug', 'Unknown')
                 theme_version = main_theme.get('version', {}).get('number', 'Unknown')
+                style_name = main_theme.get('style_name', 'Unknown')
+                theme_location = main_theme.get('location', 'Unknown')
+                
                 findings.append({
                     "type": "wp_theme",
-                    "issue": f"WordPress Theme: {theme_name}",
-                    "message": f"Active theme: {theme_name} v{theme_version}",
+                    "issue": f"WordPress Tema Activo: {theme_name}",
+                    "message": f"Tema activo: {theme_name} v{theme_version}",
                     "severity": Severity.INFO,
-                    "description": f"WordPress active theme: {theme_name} (Version: {theme_version}). Theme: {main_theme.get('style_name', 'Unknown')}",
-                    "recommendation": "Keep theme updated to latest version.",
-                    "raw_output": f"Theme: {theme_name}, Version: {theme_version}"
+                    "description": f"**Tema Activo:** {theme_name}\n**Versión:** {theme_version}\n**Nombre del Estilo:** {style_name}\n**Ubicación:** {theme_location}",
+                    "recommendation": "Mantener el tema actualizado a la última versión disponible.",
+                    "raw_output": json.dumps({
+                        "theme": theme_name,
+                        "version": theme_version,
+                        "style_name": style_name,
+                        "location": theme_location
+                    }, indent=2)
                 })
             
             if themes:
                 theme_names = list(themes.keys())
+                theme_details = []
+                vulnerable_themes = []
+                
+                for theme_name, theme_data in themes.items():
+                    version = theme_data.get('version', {}).get('number', 'Unknown')
+                    location = theme_data.get('location', 'Unknown')
+                    status = theme_data.get('status', 'Unknown')
+                    theme_vulns = theme_data.get('vulnerabilities', [])
+                    
+                    theme_info = f"- **{theme_name}** (v{version}) - {status}"
+                    if location != 'Unknown':
+                        theme_info += f" - {location}"
+                    theme_details.append(theme_info)
+                    
+                    if theme_vulns:
+                        vulnerable_themes.append({
+                            "name": theme_name,
+                            "version": version,
+                            "vulnerabilities": theme_vulns
+                        })
+                
                 findings.append({
                     "type": "wp_themes",
-                    "issue": f"WordPress Themes Detected ({len(themes)})",
-                    "message": f"Found {len(themes)} themes: {', '.join(theme_names)}",
+                    "issue": f"WordPress Temas Detectados ({len(themes)})",
+                    "message": f"Encontrados {len(themes)} temas instalados.",
                     "severity": Severity.INFO,
-                    "description": f"WordPress themes detected: {', '.join(theme_names)}. Unused themes should be removed.",
-                    "recommendation": "Remove unused themes. Keep active theme updated.",
-                    "raw_output": f"Themes: {', '.join(theme_names)}"
+                    "description": f"Temas de WordPress detectados: {len(themes)} temas encontrados.\n\n**Temas Encontrados:**\n" + "\n".join(theme_details),
+                    "recommendation": "Eliminar temas no utilizados. Mantener el tema activo actualizado.",
+                    "raw_output": json.dumps({
+                        "total_themes": len(themes),
+                        "theme_list": theme_names,
+                        "theme_details": {t: {"version": d.get('version', {}).get('number'), "location": d.get('location'), "status": d.get('status')} for t, d in themes.items()}
+                    }, indent=2)
                 })
                 
-                # Report theme vulnerabilities
-                for theme_name, theme_data in themes.items():
-                    theme_vulns = theme_data.get('vulnerabilities', [])
-                    for vuln in theme_vulns:
+                # Report theme vulnerabilities with full details
+                for vuln_theme in vulnerable_themes:
+                    for vuln in vuln_theme['vulnerabilities']:
+                        cves = vuln.get('references', {}).get('cve', [])
+                        cve_list = ', '.join(cves) if cves else 'N/A'
                         findings.append({
                             "type": "vulnerability",
-                            "issue": f"Vulnerable Theme: {theme_name}",
-                            "message": vuln.get('title', 'Theme vulnerability'),
+                            "issue": f"Tema Vulnerable: {vuln_theme['name']}",
+                            "message": f"{vuln_theme['name']} v{vuln_theme['version']} - {vuln.get('title', 'Vulnerabilidad detectada')}",
                             "severity": Severity.MEDIUM,
-                            "description": f"Theme {theme_name} has known vulnerabilities: {vuln.get('title', 'Unknown')}. CVE: {', '.join(vuln.get('references', {}).get('cve', []))}",
-                            "recommendation": f"Update {theme_name} theme immediately.",
-                            "raw_output": str(vuln)
+                            "description": f"**Tema:** {vuln_theme['name']}\n**Versión:** {vuln_theme['version']}\n**Vulnerabilidad:** {vuln.get('title', 'Unknown')}\n**CVEs:** {cve_list}\n**Descripción:** {vuln.get('description', 'N/A')}",
+                            "recommendation": f"Actualizar {vuln_theme['name']} inmediatamente. Revisar CVEs: {cve_list}",
+                            "raw_output": json.dumps({
+                                "theme": vuln_theme['name'],
+                                "version": vuln_theme['version'],
+                                "vulnerability": vuln
+                            }, indent=2)
                         })
             
             # Config Backup Files
@@ -674,62 +768,132 @@ class WPScanTool(BaseTool):
 
 
 class JoomlaScanTool(BaseTool):
-    """Joomla CMS Scanner using joomscan"""
+    """Joomla CMS Scanner using joomscan - v19.0: Enhanced reporting"""
     @property
     def name(self) -> str:
         return "joomscan"
     
     def run(self, target: str) -> List[Dict[str, Any]]:
-        """Scan Joomla installation for vulnerabilities"""
+        """Scan Joomla installation for vulnerabilities with detailed reporting"""
         if not shutil.which("joomscan"):
             return []
         
         findings = []
         try:
-            cmd = ["joomscan", "-u", target]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
-            output = result.stdout.lower()
+            cmd = ["joomscan", "-u", target, "--enumerate-components", "--enumerate-users"]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=180)
+            output = result.stdout + result.stderr
             
             # Parse version
-            version_match = re.search(r'joomla version\s*:\s*([0-9.]+)', output)
+            version_match = re.search(r'joomla\s+version\s*[:\s]+([0-9.]+)', output, re.IGNORECASE)
             if version_match:
+                version = version_match.group(1)
                 findings.append({
                     "type": "cms_version",
-                    "issue": "Joomla Version Detected",
-                    "message": f"Joomla {version_match.group(1)}",
+                    "issue": f"Joomla Versión Detectada: {version}",
+                    "message": f"Joomla {version} identificado",
                     "severity": Severity.INFO,
-                    "description": f"Joomla version {version_match.group(1)} identified.",
-                    "recommendation": "Ensure Joomla is up to date."
+                    "description": f"**Versión de Joomla:** {version}\n\nSe detectó una instalación de Joomla. Revisar componentes y extensiones instaladas.",
+                    "recommendation": "Asegurar que Joomla esté actualizado a la última versión disponible.",
+                    "raw_output": json.dumps({"version": version}, indent=2)
+                })
+            
+            # Parse components/extensions
+            components = []
+            component_pattern = r'\[(?:\+|\*)\]\s+([^\s]+)\s+-\s+([^\n]+)'
+            component_matches = re.findall(component_pattern, output, re.IGNORECASE)
+            for comp_name, comp_info in component_matches:
+                components.append({"name": comp_name, "info": comp_info.strip()})
+            
+            if components:
+                component_list = "\n".join([f"- **{c['name']}**: {c['info']}" for c in components[:20]])
+                findings.append({
+                    "type": "joomla_components",
+                    "issue": f"Componentes Joomla Detectados ({len(components)})",
+                    "message": f"Encontrados {len(components)} componentes/extensiones",
+                    "severity": Severity.INFO,
+                    "description": f"Componentes y extensiones de Joomla detectados: {len(components)} encontrados.\n\n**Componentes Encontrados:**\n{component_list}",
+                    "recommendation": "Revisar cada componente por actualizaciones de seguridad. Eliminar componentes no utilizados.",
+                    "raw_output": json.dumps({"components": components}, indent=2)
+                })
+            
+            # Parse users
+            users = []
+            user_pattern = r'user\s+(?:id|name)[:\s]+([^\s\n]+)'
+            user_matches = re.findall(user_pattern, output, re.IGNORECASE)
+            for user in user_matches:
+                if user not in users and len(user) > 2:
+                    users.append(user)
+            
+            if users:
+                user_list = "\n".join([f"- {u}" for u in users[:20]])
+                findings.append({
+                    "type": "joomla_users",
+                    "issue": f"Usuarios Joomla Enumerados ({len(users)})",
+                    "message": f"Encontrados {len(users)} usuarios mediante enumeración",
+                    "severity": Severity.MEDIUM,
+                    "description": f"Enumeración de usuarios revela {len(users)} nombres de usuario.\n\n**Usuarios Encontrados:**\n{user_list}",
+                    "recommendation": "Deshabilitar enumeración de usuarios. Cambiar nombres de usuario administrativos a nombres no obvios.",
+                    "raw_output": json.dumps({"users": users}, indent=2)
                 })
             
             # Check for common misconfigurations
+            config_backups = []
             if "configuration.php~" in output or "configuration.php.bak" in output:
+                config_backups.append("configuration.php~")
+            if "configuration.php.bak" in output:
+                config_backups.append("configuration.php.bak")
+            
+            if config_backups:
                 findings.append({
                     "type": "misconfig",
-                    "issue": "Joomla Config Backup Exposed",
-                    "message": "Configuration backup accessible",
+                    "issue": "Archivos de Configuración de Respaldo Expuestos",
+                    "message": f"Archivos de respaldo accesibles: {', '.join(config_backups)}",
                     "severity": Severity.CRITICAL,
-                    "description": "Joomla configuration backup files are exposed.",
-                    "recommendation": "Remove configuration backup files."
+                    "description": f"**Archivos Expuestos:**\n" + "\n".join([f"- {f}" for f in config_backups]) + "\n\nLos archivos de respaldo de configuración de Joomla contienen credenciales de base de datos y otras información sensible.",
+                    "recommendation": "Eliminar inmediatamente todos los archivos de respaldo de configuración. Estos archivos contienen credenciales sensibles.",
+                    "raw_output": json.dumps({"backup_files": config_backups}, indent=2)
+                })
+            
+            # Check for vulnerable components
+            vuln_pattern = r'vulnerable|exploit|cve|cve-\d{4}-\d+'
+            vuln_matches = re.findall(vuln_pattern, output, re.IGNORECASE)
+            if vuln_matches:
+                findings.append({
+                    "type": "vulnerability",
+                    "issue": "Posibles Vulnerabilidades en Componentes",
+                    "message": "Se detectaron referencias a vulnerabilidades en el output",
+                    "severity": Severity.HIGH,
+                    "description": f"El escaneo detectó posibles vulnerabilidades. Revisar el output completo de joomscan para detalles específicos.",
+                    "recommendation": "Revisar manualmente el output de joomscan y actualizar componentes vulnerables.",
+                    "raw_output": output[-2000:]  # Last 2000 chars
                 })
         
         except subprocess.TimeoutExpired:
-            pass
-        except Exception:
-            pass
+            findings.append({
+                "type": "scan_timeout",
+                "issue": "JoomlaScan Timeout",
+                "message": "El escaneo de Joomla excedió el tiempo límite",
+                "severity": Severity.INFO,
+                "description": "JoomlaScan no completó en el tiempo esperado. Esto puede indicar un sitio grande o problemas de conectividad.",
+                "recommendation": "Ejecutar joomscan manualmente con un timeout mayor para obtener resultados completos."
+            })
+        except Exception as e:
+            from ..core.debug import debug_print
+            debug_print(f"    [JoomlaScan] Error: {e}")
         
         return findings
 
 
 class DroopescanTool(BaseTool):
-    """Drupal/Joomla/WordPress scanner using droopescan"""
+    """Drupal/Joomla/WordPress scanner using droopescan - v19.0: Enhanced reporting"""
     @property
     def name(self) -> str:
         return "droopescan"
     
     def run(self, target: str, cms_type: str = "drupal") -> List[Dict[str, Any]]:
         """
-        Scan CMS for vulnerabilities
+        Scan CMS for vulnerabilities with detailed reporting
         cms_type: 'drupal', 'joomla', 'wordpress'
         """
         if not shutil.which("droopescan"):
@@ -737,24 +901,97 @@ class DroopescanTool(BaseTool):
         
         findings = []
         try:
-            cmd = ["droopescan", "scan", cms_type, "-u", target, "-t", "16"]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=90)
-            output = result.stdout
+            cmd = ["droopescan", "scan", cms_type, "-u", target, "-t", "16", "-e", "av"]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=120)
+            output = result.stdout + result.stderr
+            
+            # Parse version
+            version_patterns = {
+                "drupal": r'drupal\s+version[:\s]+([0-9.]+)',
+                "joomla": r'joomla\s+version[:\s]+([0-9.]+)',
+                "wordpress": r'wordpress\s+version[:\s]+([0-9.]+)'
+            }
+            
+            version_match = re.search(version_patterns.get(cms_type.lower(), r'version[:\s]+([0-9.]+)'), output, re.IGNORECASE)
+            if version_match:
+                version = version_match.group(1)
+                findings.append({
+                    "type": "cms_version",
+                    "issue": f"{cms_type.title()} Versión Detectada: {version}",
+                    "message": f"{cms_type.title()} {version} identificado",
+                    "severity": Severity.INFO,
+                    "description": f"**Versión de {cms_type.title()}:** {version}\n\nSe detectó una instalación de {cms_type.title()}.",
+                    "recommendation": f"Asegurar que {cms_type.title()} esté actualizado a la última versión disponible.",
+                    "raw_output": json.dumps({"cms": cms_type, "version": version}, indent=2)
+                })
             
             # Parse interesting files
-            if "[+] possible" in output.lower() or "[+] found" in output.lower():
+            interesting_files = []
+            file_pattern = r'\[(?:\+|\*)\]\s+([^\n]+)'
+            file_matches = re.findall(file_pattern, output)
+            for match in file_matches:
+                if any(keyword in match.lower() for keyword in ['config', 'backup', 'admin', 'install', 'update', 'readme', 'changelog']):
+                    interesting_files.append(match.strip())
+            
+            if interesting_files:
+                file_list = "\n".join([f"- {f}" for f in interesting_files[:20]])
                 findings.append({
                     "type": "cms_findings",
-                    "issue": f"{cms_type.title()} Interesting Files Found",
-                    "message": f"Droopescan found exposed files",
+                    "issue": f"Archivos Interesantes de {cms_type.title()} Encontrados ({len(interesting_files)})",
+                    "message": f"Encontrados {len(interesting_files)} archivos/paths sensibles",
                     "severity": Severity.MEDIUM,
-                    "description": "Sensitive files or paths detected.",
-                    "recommendation": "Review and restrict access to sensitive files."
+                    "description": f"Archivos y paths sensibles detectados en {cms_type.title()}:\n\n**Archivos Encontrados:**\n{file_list}",
+                    "recommendation": "Revisar y restringir el acceso a archivos sensibles. Eliminar archivos de instalación, backups y archivos de configuración expuestos.",
+                    "raw_output": json.dumps({"files": interesting_files}, indent=2)
+                })
+            
+            # Parse plugins/modules (Drupal specific)
+            if cms_type.lower() == "drupal":
+                modules = []
+                module_pattern = r'module[:\s]+([^\s\n]+)'
+                module_matches = re.findall(module_pattern, output, re.IGNORECASE)
+                for module in module_matches:
+                    if module not in modules and len(module) > 2:
+                        modules.append(module)
+                
+                if modules:
+                    module_list = "\n".join([f"- {m}" for m in modules[:20]])
+                    findings.append({
+                        "type": "drupal_modules",
+                        "issue": f"Módulos Drupal Detectados ({len(modules)})",
+                        "message": f"Encontrados {len(modules)} módulos",
+                        "severity": Severity.INFO,
+                        "description": f"Módulos de Drupal detectados: {len(modules)} encontrados.\n\n**Módulos Encontrados:**\n{module_list}",
+                        "recommendation": "Revisar cada módulo por actualizaciones de seguridad. Eliminar módulos no utilizados.",
+                        "raw_output": json.dumps({"modules": modules}, indent=2)
+                    })
+            
+            # Check for vulnerabilities
+            vuln_pattern = r'vulnerable|exploit|cve-\d{4}-\d+'
+            vuln_matches = re.findall(vuln_pattern, output, re.IGNORECASE)
+            if vuln_matches:
+                cves = [m for m in vuln_matches if m.startswith('CVE-')]
+                findings.append({
+                    "type": "vulnerability",
+                    "issue": f"Posibles Vulnerabilidades en {cms_type.title()}",
+                    "message": f"Se detectaron referencias a vulnerabilidades (CVEs: {len(cves)})",
+                    "severity": Severity.HIGH,
+                    "description": f"El escaneo detectó posibles vulnerabilidades en {cms_type.title()}.\n\n**CVEs Detectados:**\n" + "\n".join([f"- {cve}" for cve in cves[:10]]) if cves else "Revisar output completo para detalles.",
+                    "recommendation": f"Revisar manualmente el output de droopescan y actualizar {cms_type.title()} y sus extensiones.",
+                    "raw_output": output[-2000:]  # Last 2000 chars
                 })
         
         except subprocess.TimeoutExpired:
-            pass
-        except Exception:
-            pass
+            findings.append({
+                "type": "scan_timeout",
+                "issue": "Droopescan Timeout",
+                "message": f"El escaneo de {cms_type.title()} excedió el tiempo límite",
+                "severity": Severity.INFO,
+                "description": f"Droopescan no completó el escaneo de {cms_type.title()} en el tiempo esperado.",
+                "recommendation": "Ejecutar droopescan manualmente con un timeout mayor para obtener resultados completos."
+            })
+        except Exception as e:
+            from ..core.debug import debug_print
+            debug_print(f"    [Droopescan] Error: {e}")
         
         return findings

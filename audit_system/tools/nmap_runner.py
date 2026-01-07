@@ -3,6 +3,7 @@ import shutil
 from typing import Dict, Any
 from .base import BaseTool
 from ..core.exceptions import ToolError
+from ..core.logger import debug_print
 
 class NmapTool(BaseTool):
     @property

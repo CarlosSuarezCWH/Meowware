@@ -10,30 +10,47 @@ from ..intelligence.agents.defense_agent import DefenseAgent
 
 class CognitiveEngine:
     def __init__(self, model: str = "deepseek-chat"):
-        # v17.3: DeepSeek API support
+        # v19.0: Auto-detect provider - prioritize DeepSeek if API key is available
         self.api_key = os.environ.get('DEEPSEEK_API_KEY', '')
-        self.api_provider = os.environ.get('LLM_PROVIDER', 'deepseek').lower()  # 'deepseek' or 'ollama'
+        api_provider_env = os.environ.get('LLM_PROVIDER', '').lower()
         
-        if self.api_provider == 'deepseek':
-            if not self.api_key:
-                # v17.4: Don't disable immediately, check again later (might be loaded from .env)
-                debug_print("  ⚠️ DEEPSEEK_API_KEY no configurada en CognitiveEngine.__init__")
-                # Try to reload from environment
-                self.api_key = os.environ.get('DEEPSEEK_API_KEY', '')
-                if not self.api_key:
-                    debug_print("  ⚠️ DEEPSEEK_API_KEY no configurada. Usando fallback heuristic.")
-                    self.enabled = False
-                    return
+        # v19.0: If DEEPSEEK_API_KEY is set, always use DeepSeek (ignore LLM_PROVIDER if it's wrong)
+        if self.api_key:
+            self.api_provider = 'deepseek'
             self.api_url = "https://api.deepseek.com/v1/chat/completions"
             self.model = model if model != "llama2" else "deepseek-chat"
+            self.enabled = True
             debug_print(f"  [✓] DeepSeek API configurada: {self.model}")
-        else:
-            # Ollama (default legacy)
+        elif api_provider_env == 'deepseek':
+            # Provider is deepseek but no API key - disable
+            debug_print("  ⚠️ DEEPSEEK_API_KEY no configurada. Usando fallback heuristic.")
+            self.api_provider = 'deepseek'
+            self.api_url = "https://api.deepseek.com/v1/chat/completions"
+            self.model = model if model != "llama2" else "deepseek-chat"
+            self.enabled = False
+            return
+        elif api_provider_env == 'ollama':
+            # Explicitly configured for Ollama
+            self.api_provider = 'ollama'
             self.api_url = os.environ.get('LLM_URL', "http://localhost:11434/api/generate")
             self.model = model
+            self.enabled = True
             debug_print(f"  [✓] Ollama configurado: {self.model}")
-        
-        self.enabled = True
+        else:
+            # Default: Try DeepSeek first, fallback to Ollama only if no key
+            if self.api_key:
+                self.api_provider = 'deepseek'
+                self.api_url = "https://api.deepseek.com/v1/chat/completions"
+                self.model = model if model != "llama2" else "deepseek-chat"
+                self.enabled = True
+                debug_print(f"  [✓] DeepSeek API configurada (auto-detect): {self.model}")
+            else:
+                # Fallback to Ollama only if no DeepSeek key
+                self.api_provider = 'ollama'
+                self.api_url = os.environ.get('LLM_URL', "http://localhost:11434/api/generate")
+                self.model = model
+                self.enabled = True
+                debug_print(f"  [✓] Ollama configurado (fallback): {self.model}")
         self.consecutive_failures = 0
         # v17.3: LLM Response Cache
         self.response_cache = {}  # Simple in-memory cache
@@ -47,7 +64,7 @@ class CognitiveEngine:
         self.defense_agent = DefenseAgent(model=self.model)
 
     def _check_health(self):
-        """v17.3: Health check for LLM (DeepSeek or Ollama)."""
+        """v19.0: Health check for LLM (DeepSeek or Ollama)."""
         if not self.enabled:
             return
         try:
@@ -57,14 +74,22 @@ class CognitiveEngine:
                 if not self.api_key:
                     debug_print("  [!] DeepSeek API: No API key. Fallback heuristic will be used.")
                     self.enabled = False
+                else:
+                    # v19.0: Verify we're not accidentally using Ollama URL
+                    if 'localhost:11434' in self.api_url or 'ollama' in self.api_url.lower():
+                        debug_print("  [!] WARNING: DeepSeek provider but Ollama URL detected. Fixing...")
+                        self.api_url = "https://api.deepseek.com/v1/chat/completions"
             else:
                 # Ollama: Check local server
-                requests.get("http://localhost:11434/", timeout=2)
-        except:
+                try:
+                    requests.get("http://localhost:11434/", timeout=2)
+                except:
+                    debug_print("  [!] Ollama Health Check: OFFLINE. Fallback heuristic will be used.")
+        except Exception as e:
             if self.api_provider == 'deepseek':
-                debug_print("  [!] DeepSeek API: Health check skipped (API key configured)")
+                debug_print(f"  [!] DeepSeek API: Health check skipped (API key configured)")
             else:
-                debug_print("  [!] Ollama Health Check: OFFLINE. Fallback heuristic will be used.")
+                debug_print(f"  [!] Ollama Health Check: OFFLINE. Fallback heuristic will be used.")
 
     def _delegate_to_agents(self, host: Host, context: str, history: List[str], findings_summary: str, iteration: int, anomalies: List[Any], hypotheses: List[Any], tech_stack: Dict[str, Any], recent_findings: List[Any]) -> Optional[Dict[str, Any]]:
         """v18.5: 3-Layer Decision Swarm."""
@@ -92,7 +117,18 @@ class CognitiveEngine:
             return self.defense_agent.run(host, agent_context)
             
         # If high/critical vulns found, use exploit strategy
-        critical_vulns = [f for f in (recent_findings or []) if f.severity.name in ["CRITICAL", "HIGH"]]
+        # v19.0: Handle both Finding objects and dicts
+        critical_vulns = []
+        for f in (recent_findings or []):
+            if isinstance(f, dict):
+                severity_str = str(f.get('severity', '')).upper()
+                if severity_str in ["CRITICAL", "HIGH"]:
+                    critical_vulns.append(f)
+            elif hasattr(f, 'severity'):
+                if hasattr(f.severity, 'name') and f.severity.name in ["CRITICAL", "HIGH"]:
+                    critical_vulns.append(f)
+                elif str(f.severity).upper() in ["CRITICAL", "HIGH"]:
+                    critical_vulns.append(f)
         if critical_vulns:
             return self.exploit_agent.run(host, agent_context)
             
@@ -299,13 +335,22 @@ class CognitiveEngine:
             }
         
         # Regla 2: WordPress detectado → wpscan (si no ejecutado)
+        # v19.0: Check multiple sources for WordPress detection
+        wp_detected = False
         if tech_stack and tech_stack.get('cms', ''):
             cms_lower = str(tech_stack.get('cms', '')).lower()
-            if "wordpress" in cms_lower and "wpscan" not in history:
-                return {
-                    "decision": {"tool": "wpscan", "reason": "WordPress detected - enumerate plugins/themes"},
-                    "stop": False
-                }
+            if "wordpress" in cms_lower:
+                wp_detected = True
+        # Also check web_context directly
+        if hasattr(host, 'web_context') and host.web_context:
+            if host.web_context.cms_detected and "wordpress" in host.web_context.cms_detected.lower():
+                wp_detected = True
+        
+        if wp_detected and "wpscan" not in history:
+            return {
+                "decision": {"tool": "wpscan", "reason": "WordPress detected - enumerate plugins/themes/users"},
+                "stop": False
+            }
         
         # Regla 3: Mail server → smtp-user-enum (si SMTP abierto y no ejecutado)
         if host.hostname and ("mail" in host.hostname.lower() or "smtp" in host.hostname.lower()):
@@ -677,7 +722,25 @@ PRIORITIZE these tools to investigate the vulnerabilities found.
                 port_list += f" (+{len(open_ports)-15} más)"
             port_summary = f"{len(open_ports)} abiertos: {port_list}"
         
-        prompt = f"""### ROL: Senior Pentester Automatizado (v17.5)
+        # v19.0: Build current state and system recommendations
+        current_state = f"""
+### ESTADO ACTUAL:
+- Iteración: {iteration}/5
+- Herramientas ejecutadas: {len(executed_tools)}
+- Hallazgos recientes: {len(recent_findings) if recent_findings else 0}
+- Anomalías detectadas: {len(anomalies) if anomalies else 0}
+- Hipótesis activas: {len(hypotheses) if hypotheses else 0}
+"""
+        
+        system_recommendations = """
+### RECOMENDACIONES DEL SISTEMA:
+- Priorizar herramientas no ejecutadas
+- Enfocarse en servicios abiertos detectados
+- Seguir hipótesis activas si existen
+- Considerar anomalías detectadas
+"""
+        
+        prompt = f"""### ROL: Senior Pentester Automatizado (v19.0)
 {expert_rag}
 
 {tech_stack_section}

@@ -1,4 +1,4 @@
-# Meowware v16.0 - Python Dependencies
+# Meowware v19.0 - Python Dependencies
 # Developed by Carlos Mancera
 # Python 3.8+ required
 
@@ -6,17 +6,17 @@
 requests>=2.31.0
 urllib3>=2.0.0  # Required for HTTP pool retry strategy
 
-# Optional: Environment variables management
+# Environment variables management
 python-dotenv>=1.0.0
 
-# Optional: Data validation (recomendado para mejoras futuras)
-# pydantic>=2.0.0
+# Data validation (v19.0: ahora requerido)
+pydantic>=2.0.0
 
-# Optional: Rate limiting (recomendado para mejoras futuras)
-# ratelimit>=2.2.1
+# Rate limiting (v19.0: recomendado)
+ratelimit>=2.2.1
 
-# Optional: Enhanced logging (recomendado para mejoras futuras)
-# structlog>=23.0.0
+# Enhanced logging (v19.0: recomendado)
+structlog>=23.0.0
 
 # Note: Las siguientes herramientas deben instalarse manualmente o via install_tools.sh:
 # - nmap (apt install nmap)

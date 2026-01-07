@@ -21,23 +21,24 @@ class MeowwareSerializer:
         # Handle Finding objects
         if isinstance(obj, Finding):
             return {
-                'title': obj.title,
-                'category': obj.category,
+                'title': getattr(obj, 'title', 'Unknown Finding'),
+                'category': getattr(obj, 'category', 'Unknown'),
                 'severity': obj.severity.value if hasattr(obj.severity, 'value') else str(obj.severity),
-                'description': obj.description,
-                'recommendation': obj.recommendation,
-                'raw_output': obj.raw_output,
-                'confidence_score': obj.confidence_score,
-                'evidence_type': obj.evidence_type.value if hasattr(obj.evidence_type, 'value') else str(obj.evidence_type)
+                'description': getattr(obj, 'description', ''),
+                'recommendation': getattr(obj, 'recommendation', ''),
+                'raw_output': getattr(obj, 'raw_output', ''),
+                'confidence_score': getattr(obj, 'confidence_score', 0.5),
+                'evidence_type': obj.evidence_type.value if hasattr(obj.evidence_type, 'value') else str(obj.evidence_type),
+                'status': obj.status.value if hasattr(obj, 'status') and hasattr(obj.status, 'value') else str(getattr(obj, 'status', 'POTENTIAL'))
             }
         
         # Handle Anomaly objects (if exists)
         if hasattr(obj, '__class__') and 'Anomaly' in str(obj.__class__):
             return {
-                'type': getattr(obj, 'type', {}).value if hasattr(getattr(obj, 'type', None), 'value') else str(getattr(obj, 'type', '')),
+                'type': getattr(obj, 'type', {}).value if hasattr(getattr(obj, 'type', None), 'value') else str(getattr(obj, 'type', 'Unknown')),
                 'description': getattr(obj, 'description', ''),
                 'confidence': getattr(obj, 'confidence', 0.0),
-                'severity': getattr(obj, 'severity', {}).value if hasattr(getattr(obj, 'severity', None), 'value') else str(getattr(obj, 'severity', ''))
+                'severity': getattr(obj, 'severity', {}).value if hasattr(getattr(obj, 'severity', None), 'value') else str(getattr(obj, 'severity', 'INFO'))
             }
         
         # Handle dataclasses

@@ -10,21 +10,39 @@ class BaseAgent:
     def __init__(self, agent_name: str, model: str = None):
         self.agent_name = agent_name
         self.api_key = os.environ.get('DEEPSEEK_API_KEY', '')
-        self.api_provider = os.environ.get('LLM_PROVIDER', 'deepseek').lower()
-        self.api_url = os.environ.get('LLM_URL', "")
+        api_provider_env = os.environ.get('LLM_PROVIDER', '').lower()
         
-        if self.api_provider == 'deepseek':
+        # v19.0: Auto-detect provider - if DEEPSEEK_API_KEY is set, use DeepSeek
+        if self.api_key:
+            self.api_provider = 'deepseek'
             self.model = model or "deepseek-chat"
-            if not self.api_url:
-                self.api_url = "https://api.deepseek.com/v1/chat/completions"
-        else:
-            self.model = model or "llama3" # Default to llama3 for Ollama in v18.0
-            if not self.api_url:
-                self.api_url = "http://localhost:11434/api/generate"
-        
-        self.enabled = True
-        if self.api_provider == 'deepseek' and not self.api_key:
+            self.api_url = "https://api.deepseek.com/v1/chat/completions"
+            self.enabled = True
+        elif api_provider_env == 'deepseek':
+            # Provider is deepseek but no API key - disable
+            self.api_provider = 'deepseek'
+            self.model = model or "deepseek-chat"
+            self.api_url = "https://api.deepseek.com/v1/chat/completions"
             self.enabled = False
+        elif api_provider_env == 'ollama':
+            # Explicitly configured for Ollama
+            self.api_provider = 'ollama'
+            self.model = model or "llama3"
+            self.api_url = os.environ.get('LLM_URL', "http://localhost:11434/api/generate")
+            self.enabled = True
+        else:
+            # Default: Try DeepSeek first if API key exists, otherwise Ollama
+            if self.api_key:
+                self.api_provider = 'deepseek'
+                self.model = model or "deepseek-chat"
+                self.api_url = "https://api.deepseek.com/v1/chat/completions"
+                self.enabled = True
+            else:
+                # Fallback to Ollama only if no DeepSeek key
+                self.api_provider = 'ollama'
+                self.model = model or "llama3"
+                self.api_url = os.environ.get('LLM_URL', "http://localhost:11434/api/generate")
+                self.enabled = True
             
     def _call_llm(self, prompt: str, system_prompt: str = None) -> Optional[str]:
         if not self.enabled:

@@ -25,6 +25,16 @@ class EvidenceType(str, Enum):
     VULNERABILITY = "VULNERABILITY"
     MISCONFIG = "MISCONFIG"
     HEURISTIC = "HEURISTIC"
+    STATIC_ANALYSIS = "STATIC_ANALYSIS" # v19.0: Code analysis evidence
+
+class FindingStatus(str, Enum):
+    """v19.0: Status of a finding based on evidence"""
+    POTENTIAL = "POTENTIAL"  # Risk identified but not confirmed
+    LIKELY = "LIKELY"  # Strong indicators but no direct proof
+    CONFIRMED = "CONFIRMED"  # Direct evidence of vulnerability
+    ARCHITECTURAL_RISK = "ARCHITECTURAL_RISK"  # Bad practice, not direct vulnerability
+    CONFIGURATION_WEAKNESS = "CONFIGURATION_WEAKNESS" # Weak configuration
+
 
 class BaseModel:
     def to_dict(self):
@@ -72,6 +82,7 @@ class Finding(BaseModel):
     raw_output: str = "" # Phase 8: Appendix Data
     confidence_score: float = 0.5 # Phase 6: Reliability weighting
     evidence_type: EvidenceType = EvidenceType.HEURISTIC # Phase 3: Classification
+    status: FindingStatus = FindingStatus.POTENTIAL # v19.0: Validation status
 
     def __post_init__(self):
         """v13.0: Ensure severity is always an Enum."""

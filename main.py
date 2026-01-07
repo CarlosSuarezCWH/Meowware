@@ -5,7 +5,7 @@ import os
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# v17.4: Load .env file if it exists (before importing Orchestrator)
+# v19.0: Load .env file if it exists (before importing anything)
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -22,32 +22,46 @@ except ImportError:
                     value = value.strip().strip('"').strip("'")
                     os.environ[key] = value
 
+# v19.0: Importar configuración y validadores primero
+from audit_system.core.config import get_config, reload_config
+from audit_system.core.logger import logger
+from audit_system.core.validators import validate_and_sanitize_target, ValidationError
 from audit_system.core.orchestrator import Orchestrator
 from audit_system.reporting.generator import Reporter
 from audit_system.core.exceptions import AuditError
 
 def main():
-    parser = argparse.ArgumentParser(description="Meowware v1.0 'Tulipán' - Professional Security Audit Platform")
+    parser = argparse.ArgumentParser(description="Meowware v19.0 'Tulipán' - Professional Security Audit Platform")
     parser.add_argument("target", help="IP or Domain to audit")
     parser.add_argument("--json", action="store_true", help="Output full JSON to stdout")
     parser.add_argument("--debug", action="store_true", help="Enable verbose debug mode (shows AI prompts, tool outputs, etc.)")
     
     args = parser.parse_args()
 
-    # Set global debug flag
+    # v19.0: Set global debug flag y recargar configuración
     os.environ['DEBUG_MODE'] = '1' if args.debug else '0'
+    config = reload_config()  # Recargar para aplicar DEBUG_MODE
     
     if args.debug:
-        print("[DEBUG] Debug mode enabled - Verbose output active", file=sys.stderr)
-        print("[DEBUG] All AI prompts and tool outputs will be shown", file=sys.stderr)
-        print("-" * 60, file=sys.stderr)
+        logger.info("Debug mode enabled - Verbose output active")
+        logger.info("All AI prompts and tool outputs will be shown")
+        logger.info("-" * 60)
 
-    print(f"[*] Starting Meowware audit for: {args.target}...", file=sys.stderr)
-    print(f"[*] Initializing Meowware v1.0 'Tulipán' [Professional Security Audit Platform]...", file=sys.stderr)
+    logger.info(f"Starting Meowware audit for: {args.target}")
+    logger.info("Initializing Meowware v19.0 'Tulipán' [Professional Security Audit Platform]")
+    
+    # v19.0: Validar y sanitizar target
+    try:
+        validated_target = validate_and_sanitize_target(args.target)
+        logger.debug(f"Target validado: {validated_target}")
+    except ValidationError as e:
+        logger.error(f"Error de validación: {e}")
+        print(f"[!] Error: {e}", file=sys.stderr)
+        sys.exit(1)
     
     try:
         orchestrator = Orchestrator()
-        report_data = orchestrator.run(args.target)
+        report_data = orchestrator.run(validated_target)
         
         if args.json:
             print(Reporter.generate_json(report_data))
@@ -66,12 +80,19 @@ def main():
                 with open("meowware_report.html", "w") as f: f.write(html_report)
                 print(f"\n[✔] Reports saved: report_summary.txt, meowware_report.html", file=sys.stderr)
             except Exception as e:
+                logger.error(f"Failed to save reports: {e}", exc_info=True)
                 print(f"\n[✖] Failed to save reports: {e}", file=sys.stderr)
             
     except AuditError as e:
+        logger.error(f"Audit error: {e}", exc_info=True)
         print(f"[!] Error: {e}", file=sys.stderr)
         sys.exit(1)
+    except ValidationError as e:
+        logger.error(f"Validation error: {e}", exc_info=True)
+        print(f"[!] Error de validación: {e}", file=sys.stderr)
+        sys.exit(1)
     except Exception as e:
+        logger.error(f"Unexpected error: {e}", exc_info=True)
         print(f"[!] Unexpected Error: {e}", file=sys.stderr)
         if args.debug:
             import traceback
